@@ -140,39 +140,45 @@ st.set_page_config(page_title="Concert Tour Info Bot", layout="wide")
 st.title("Concert Tour Information Bot")
 st.markdown("""
 Welcome to the Concert Tour Info Bot!
+
 You can **ADD** documents about concert tours or **QUERY** existing information.
+
 If no documents are added to the repository, you can enter an **artist or band name** to search for their upcoming concerts online.
+
 If documents are present, the bot will first try to answer from them (RAG). If no relevant information is found in your documents, it will attempt an online search for concerts by the artist/band name you provided.
 """)
 
 # --- LLM Provider Selection (using session state) ---
+# Initialize session state for provider if not exists
 if 'llm_provider' not in st.session_state:
-    # Default to Hugging Face if GEMINI_API_KEY is missing, otherwise Gemini
-    st.session_state.llm_provider = 'huggingface' if not GEMINI_API_KEY else 'gemini'
+    # Always default to Gemini, regardless of API key status
+    st.session_state.llm_provider = 'gemini'
 
 st.sidebar.header("Configuration")
-provider_options = {'Hugging Face (Local)': 'huggingface'}
-if GEMINI_API_KEY:
-     provider_options['Google Gemini (API)'] = 'gemini'
+provider_options = {
+    'Google Gemini (API)': 'gemini', 
+    'Hugging Face (Local)': 'huggingface'
+}
 
 selected_provider_label = st.sidebar.radio(
     "Select LLM Provider:",
     options=list(provider_options.keys()),
-    index=list(provider_options.values()).index(st.session_state.llm_provider),
+    index=list(provider_options.keys()).index('Google Gemini (API)'),  # Always set Gemini as default in UI
     key="provider_radio"
 )
+
 # Update session state based on user selection only if it changed
 if st.session_state.llm_provider != provider_options[selected_provider_label]:
-     st.session_state.llm_provider = provider_options[selected_provider_label]
-     # Streamlit handles re-running and re-caching when this session state changes
+    st.session_state.llm_provider = provider_options[selected_provider_label]
+    # Streamlit handles re-running and re-caching when this session state changes
 
 # Display Gemini API key status
 if st.session_state.llm_provider == 'gemini':
     if GEMINI_API_KEY:
         st.sidebar.success("Gemini API Key Loaded")
     else:
-         st.sidebar.error(f"Gemini API Key ({GEMINI_API_KEY_ENV_VAR}) not found in .env")
-         st.warning("Gemini API key not set. Please set it in your .env file to use the Gemini provider.")
+        st.sidebar.error(f"Gemini API Key ({GEMINI_API_KEY_ENV_VAR}) not found in .env")
+        st.warning("You've selected Gemini API but no API key is set. Please add your Gemini API key to the .env file to use this provider, or switch to Hugging Face.")
 
 
 # --- Cached Resources Initialization ---
