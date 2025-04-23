@@ -13,7 +13,6 @@ class ConcertRAGRepository:
     """Manages the storage and retrieval of concert tour document summaries."""
 
     def __init__(self):
-        print("Initializing RAG Repository...")
         self.model = SentenceTransformer(EMBEDDING_MODEL_NAME)
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         self.index = None

@@ -2,6 +2,7 @@ import sys
 import logging
 import traceback
 from typing import Tuple, Any
+from transformers import pipeline, AutoTokenizer
 from config import (
     HF_SUMMARIZATION_MODEL, HF_QA_MODEL, HF_MAX_INPUT_LENGTH,
     GEMINI_API_KEY, GEMINI_MODEL_NAME, GEMINI_SAFETY_SETTINGS, GEMINI_GENERATION_CONFIG,
@@ -14,7 +15,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def _initialize_huggingface():
     """Loads Hugging Face pipelines. Returns pipeline dictionary."""
     try:
-        from transformers import pipeline, AutoTokenizer
+        
         logging.info(f"Initializing Hugging Face summarization pipeline with model: {HF_SUMMARIZATION_MODEL}")
         summarizer_tokenizer = AutoTokenizer.from_pretrained(HF_SUMMARIZATION_MODEL)
         summarizer = pipeline("summarization", model=HF_SUMMARIZATION_MODEL, tokenizer=summarizer_tokenizer)
@@ -33,7 +34,7 @@ def _initialize_huggingface():
         logging.info("Hugging Face pipelines initialized successfully.")
         return hf_pipelines
     except ImportError:
-        logging.error("Failed to import 'transformers'. Please install it: pip install transformers torch (or tensorflow)")
+        logging.error("Failed to import 'transformers'. Please install it: pip install transformers torch")
         sys.exit(1)
     except Exception as e:
         logging.error(f"Error initializing Hugging Face pipelines: {e}")

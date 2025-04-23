@@ -12,29 +12,42 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
 
 def select_llm_provider() -> str:
-    """Prompts the user to select an LLM provider and validates the choice."""
+    """
+    Prompts the user to select an LLM provider and validates the choice.
+    Google Gemini is recommended for the most accurate and reliable results.
+    """
+
     while True:
-        print("\nPlease select the LLM provider:")
-        print("  1: Hugging Face (Local Models - Requires 'transformers' and 'torch'/'tensorflow')")
-        print("  2: Google Gemini (Cloud API - Requires GOOGLE_API_KEY in .env)")
-        print("  0: Exit the program")
-        choice = input("Enter choice (0, 1, or 2): ").strip()
+        print("Please choose which LLM provider you would like to use:\n")
         
+        print("  1: Google Gemini (Recommended)")
+        print("     - Cloud-based model with high reliability and accuracy")
+        print("     - Requires a (free) GOOGLE_API_KEY\n")
+        
+        print("  2: Hugging Face (Local Model)")
+        print("     - Runs locally, lightweight and fast")
+        print("     - May be less reliable and prone to hallucinations\n")
+        
+        print("  0: Exit the program\n")
+
+        choice = input("Enter your choice (0, 1, or 2): ").strip()
+
         if choice == '0':
-            print("Exiting program...")
+            print("\nExiting program. Goodbye!")
             sys.exit(0)
         elif choice == '1':
-            print("Selected: Hugging Face")
-            return 'huggingface'
-        elif choice == '2':
             if not GEMINI_API_KEY:
-                print("\nERROR: Google Gemini selected, but GOOGLE_API_KEY is not set in your .env file.")
-                print("Please set the API key, choose Hugging Face, or exit.")
+                print("\nERROR: Google Gemini selected, but GOOGLE_API_KEY is not set.")
+                print("Please set the API key in your .env file before using this option.")
+                print("Alternatively, select the local Hugging Face model or exit the program.\n")
             else:
-                print("Selected: Google Gemini")
+                print("\nYou have selected: Google Gemini")
                 return 'gemini'
+        elif choice == '2':
+            print("\nYou have selected: Hugging Face (Local Model)")
+            return 'huggingface'
         else:
-            print("Invalid choice. Please enter 0, 1, or 2.")
+            print("\nInvalid input. Please enter 0, 1, or 2.")
 
 
 def print_help():
@@ -43,6 +56,7 @@ def print_help():
     print("  QUERY: <your question> - Ask a question about the concert tours.")
     print("  COUNT                  - Show the number of documents stored.")
     print("  PROVIDER               - Show the currently active LLM provider.")
+    print("  CHANGE_PROVIDER        - Change the LLM provider.")
     print("  HELP                   - Show this help message.")
     print("  EXIT                   - Exit the service.")
 
@@ -67,11 +81,9 @@ def main_loop():
              sys.exit(1)
 
         logging.info(f"LLM Client for '{active_provider}' initialized.")
-        print("LLM Client initialized.")
 
 
         # --- Initialize RAG Repository ---
-        print("Initializing RAG Repository...")
         repository = get_repository()
         logging.info("RAG Repository initialized.")
 
@@ -102,6 +114,33 @@ def main_loop():
 
             elif user_input.upper() == "PROVIDER":
                 print(f"Currently active LLM Provider: {active_provider}")
+                continue
+                
+            elif user_input.upper() == "CHANGE_PROVIDER":
+                logging.info("User requested to change LLM provider")
+                print("Changing LLM provider...")
+                
+                # Call select_llm_provider to get the new provider
+                new_provider_name = select_llm_provider()
+                
+                if new_provider_name == active_provider:
+                    print(f"Keeping the same provider: {active_provider}")
+                    continue
+                
+                # Initialize new LLM client
+                print(f"\nInitializing new LLM provider: {new_provider_name.upper()}...")
+                new_llm_client, new_active_provider = get_llm_client(new_provider_name)
+                
+                if new_llm_client is None:
+                    logging.error(f"Failed to initialize new LLM provider: {new_provider_name}")
+                    print(f"Failed to change provider. Keeping current provider: {active_provider}")
+                    continue
+                
+                # Update the current provider and client
+                llm_client = new_llm_client
+                active_provider = new_active_provider
+                logging.info(f"Successfully changed LLM provider to: {active_provider}")
+                print(f"LLM provider successfully changed to: {active_provider.upper()}")
                 continue
 
             elif user_input.upper() == "COUNT":
