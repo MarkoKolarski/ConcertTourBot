@@ -1,5 +1,6 @@
 import sys
 import logging
+import traceback
 from typing import Tuple, Any # Added for type hinting
 from config import (
     HF_SUMMARIZATION_MODEL, HF_QA_MODEL, HF_MAX_INPUT_LENGTH,
@@ -174,47 +175,110 @@ def generate_qa_answer(query: str, context: str, client: Any, provider: str) -> 
     """Generates an answer to a query based on context using the specified LLM."""
     if not client:
         return f"Error: LLM client for provider '{provider}' is not available."
-
-    prompt = f"""Based *only* on the following document summaries, answer the question.
-If the answer is not found in the summaries, say "I couldn't find specific information related to your query in the ingested documents.".
-
-Context Summaries:
----
-{context}
----
+    
+    # Create a simpler, more direct prompt format that works better with most models
+    prompt = f"""Context: {context}
 
 Question: {query}
 
 Answer:"""
-
+    
     if provider == 'huggingface':
         try:
             pipeline = client['qa_generator']
             tokenizer = client['qa_tokenizer']
-            truncated_prompt = _truncate_text(prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
-            task = "text2text-generation" if "t5" in HF_QA_MODEL else "text-generation"
-            if task == "text2text-generation":
-                 results = pipeline(truncated_prompt, max_length=200, num_return_sequences=1)
-                 answer = results[0]['generated_text']
+            
+            # Check model type
+            is_encoder_decoder = getattr(pipeline.model, "is_encoder_decoder", False)
+            model_name = HF_QA_MODEL.lower()
+            
+            # For T5 and other encoder-decoder models
+            if is_encoder_decoder or "t5" in model_name or "bart" in model_name:
+                # For encoder-decoder models, use just the question and context without formatting
+                input_text = f"question: {query} context: {context}"
+                truncated_input = _truncate_text(input_text, HF_MAX_INPUT_LENGTH, provider, tokenizer)
+                
+                results = pipeline(
+                    truncated_input, 
+                    max_length=200, 
+                    num_return_sequences=1,
+                    do_sample=True,
+                    temperature=0.7
+                )
+                answer = results[0]['generated_text']
             else:
-                 results = pipeline(truncated_prompt, max_new_tokens=200, num_return_sequences=1, pad_token_id=tokenizer.eos_token_id)
-                 answer = results[0]['generated_text'][len(truncated_prompt):]
-
+                # For decoder-only models like GPT-2, GPT-Neo, etc.
+                truncated_prompt = _truncate_text(prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
+                
+                # Generate with clear stopping criteria
+                results = pipeline(
+                    truncated_prompt,
+                    max_new_tokens=200,
+                    num_return_sequences=1,
+                    pad_token_id=tokenizer.eos_token_id,
+                    do_sample=True,
+                    temperature=0.7,
+                    # Add these parameters to improve generation quality
+                    top_k=50,
+                    top_p=0.95,
+                    no_repeat_ngram_size=3
+                )
+                
+                # Extract only the answer part
+                full_text = results[0]['generated_text']
+                answer_start = full_text.find("Answer:") + len("Answer:")
+                
+                if answer_start >= len("Answer:"):
+                    answer = full_text[answer_start:].strip()
+                else:
+                    # If "Answer:" not found, take everything after the original prompt
+                    answer = full_text[len(truncated_prompt):].strip()
+            
+            # Check if answer is empty or too short
+            if not answer or len(answer) < 5:
+                # Try a fallback approach - generate from scratch with a simpler prompt
+                fallback_prompt = f"Based on this information: {context}\n\nAnswer this question: {query}"
+                truncated_fallback = _truncate_text(fallback_prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
+                
+                if is_encoder_decoder:
+                    fallback_results = pipeline(
+                        truncated_fallback,
+                        max_length=200,
+                        num_return_sequences=1
+                    )
+                    answer = fallback_results[0]['generated_text']
+                else:
+                    fallback_results = pipeline(
+                        truncated_fallback,
+                        max_new_tokens=200,
+                        num_return_sequences=1,
+                        pad_token_id=tokenizer.eos_token_id
+                    )
+                    answer = fallback_results[0]['generated_text'][len(truncated_fallback):].strip()
+            
+            # If still empty, return a meaningful message
+            if not answer or len(answer.strip()) < 5:
+                return "Based on the available information, I couldn't generate a specific answer to your query. Please try asking in a different way."
+                
             return answer.strip()
+            
         except Exception as e:
             logging.error(f"Hugging Face QA generation failed: {e}")
-            return "Error: Could not generate answer using Hugging Face."
-
+            traceback_info = traceback.format_exc()
+            logging.error(f"Traceback: {traceback_info}")
+            return f"Error: Could not generate answer using Hugging Face."
+    
     elif provider == 'gemini':
+        # Keep your Gemini implementation as is
         try:
-            model = client # Client is the Gemini model object
-            truncated_prompt = _truncate_text(prompt, 0, provider) # Char limit check
+            model = client
+            truncated_prompt = _truncate_text(prompt, 0, provider)
             response = model.generate_content(truncated_prompt)
-             # Robust checking for blocked content or empty response
+            
             if not response.parts:
-                 block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
-                 logging.warning(f"Gemini QA blocked or empty: {block_reason}")
-                 return f"Error: Answer generation blocked by safety filters or empty response ({block_reason})."
+                block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
+                logging.warning(f"Gemini QA blocked or empty: {block_reason}")
+                return f"Error: Answer generation blocked by safety filters or empty response ({block_reason})."
             return response.text.strip()
         except Exception as e:
             logging.error(f"Gemini QA generation failed: {e}")

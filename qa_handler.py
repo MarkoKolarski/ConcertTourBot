@@ -1,10 +1,9 @@
 import logging
-from typing import Any # Added for type hinting
+from typing import Any
 from repository_utils import ConcertRAGRepository
 from config import QA_TOP_K
-from llm_integrator import generate_qa_answer # Import remains the same
+from llm_integrator import generate_qa_answer
 
-# --- Updated function signature ---
 def answer_question(
     query: str,
     repository: ConcertRAGRepository,
