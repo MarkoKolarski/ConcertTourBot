@@ -3,3 +3,5 @@ google-generativeai
 numpy
 faiss-cpu
 sentence-transformers
+streamlit
+googlesearch-python
