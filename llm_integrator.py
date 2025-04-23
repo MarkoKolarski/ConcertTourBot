@@ -1,27 +1,18 @@
 import sys
 import logging
 import traceback
-from typing import Tuple, Any # Added for type hinting
+from typing import Tuple, Any
 from config import (
     HF_SUMMARIZATION_MODEL, HF_QA_MODEL, HF_MAX_INPUT_LENGTH,
     GEMINI_API_KEY, GEMINI_MODEL_NAME, GEMINI_SAFETY_SETTINGS, GEMINI_GENERATION_CONFIG,
     MAX_LLM_INPUT_CHARS
 )
 
-# Configure basic logging
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- Placeholders are now less critical as client is passed around ---
-# _hf_pipelines = None
-# _gemini_model = None
-
-# --- Initialization Functions (Remain Internal) ---
 
 def _initialize_huggingface():
     """Loads Hugging Face pipelines. Returns pipeline dictionary."""
-    # global _hf_pipelines - No longer storing globally here
-    # if _hf_pipelines:
-    #     return _hf_pipelines
     try:
         from transformers import pipeline, AutoTokenizer
         logging.info(f"Initializing Hugging Face summarization pipeline with model: {HF_SUMMARIZATION_MODEL}")
@@ -50,15 +41,10 @@ def _initialize_huggingface():
 
 def _initialize_gemini():
     """Configures and returns the Google Gemini client."""
-    # global _gemini_model - No longer storing globally here
-    # if _gemini_model:
-    #     return _gemini_model
 
     if not GEMINI_API_KEY:
-        # This check is now primarily done in main.py before calling this
         logging.error("Gemini API Key is missing.")
-        # Let main.py handle the exit or re-prompt
-        return None # Indicate failure
+        return None
 
     try:
         import google.generativeai as genai
@@ -76,11 +62,7 @@ def _initialize_gemini():
         sys.exit(1)
     except Exception as e:
         logging.error(f"Error configuring Google Gemini: {e}")
-        # Let main.py handle the exit or re-prompt
-        return None # Indicate failure
-
-
-# --- Public Function to Get Client ---
+        return None
 
 def get_llm_client(provider: str) -> Tuple[Any, str]:
     """
@@ -97,22 +79,18 @@ def get_llm_client(provider: str) -> Tuple[Any, str]:
     provider = provider.lower()
     if provider == 'huggingface':
         client = _initialize_huggingface()
-        return client, provider # client is the dict of pipelines/tokenizers
+        return client, provider
     elif provider == 'gemini':
         client = _initialize_gemini()
-        return client, provider # client is the GenerativeModel object or None
+        return client, provider
     else:
         logging.error(f"Invalid LLM provider requested: {provider}")
-        # This case should ideally be prevented by input validation in main.py
-        return None, provider # Indicate failure
+        return None, provider
 
-
-# --- Helper for Input Truncation (Now needs provider passed) ---
 def _truncate_text(text: str, max_length: int, provider: str, tokenizer=None) -> str:
     """Truncates text based on provider specifics or char count."""
     if provider == 'huggingface' and tokenizer:
         # Use tokenizer for more accurate length check
-        # Ensure max_length has a valid value (e.g., from config)
         hf_max_len = max_length if max_length > 0 else HF_MAX_INPUT_LENGTH
         tokens = tokenizer.encode(text, truncation=False)
         if len(tokens) > hf_max_len:
@@ -120,20 +98,18 @@ def _truncate_text(text: str, max_length: int, provider: str, tokenizer=None) ->
             truncated_text = tokenizer.decode(truncated_tokens, skip_special_tokens=True)
             logging.warning(f"Input text truncated to {hf_max_len} tokens for Hugging Face model.")
             return truncated_text
-        return text # No truncation needed
+        return text
     elif provider == 'gemini':
-         # Gemini handles longer inputs better, but let's use char limit as a safeguard
+        # Gemini uses character count for truncation
          if len(text) > MAX_LLM_INPUT_CHARS:
              logging.warning(f"Input text truncated to {MAX_LLM_INPUT_CHARS} characters for Gemini.")
              return text[:MAX_LLM_INPUT_CHARS]
-         return text # No truncation needed
-    else: # Fallback just in case (e.g., invalid provider somehow)
+         return text
+    else:
         if len(text) > MAX_LLM_INPUT_CHARS:
              logging.warning(f"Input text truncated to {MAX_LLM_INPUT_CHARS} characters (fallback).")
              return text[:MAX_LLM_INPUT_CHARS]
         return text
-
-# --- Core LLM Functions (Now accept client and provider) ---
 
 def generate_summary(text: str, client: Any, provider: str) -> str:
     """Generates a summary using the specified LLM client and provider."""
@@ -153,13 +129,12 @@ def generate_summary(text: str, client: Any, provider: str) -> str:
 
     elif provider == 'gemini':
         try:
-            model = client # Client is the Gemini model object
-            truncated_text = _truncate_text(text, 0, provider) # Max length check done by char count
+            model = client
+            truncated_text = _truncate_text(text, 0, provider)
             prompt = f"Summarize the following document about a concert tour:\n\n{truncated_text}\n\nSummary:"
             response = model.generate_content(prompt)
             # Robust checking for blocked content or empty response
             if not response.parts:
-                 # Check finish_reason and safety ratings if available in the response object
                  block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
                  logging.warning(f"Gemini summarization blocked or empty: {block_reason}")
                  return f"Error: Summarization blocked by safety filters or empty response ({block_reason})."
@@ -176,7 +151,6 @@ def generate_qa_answer(query: str, context: str, client: Any, provider: str) -> 
     if not client:
         return f"Error: LLM client for provider '{provider}' is not available."
     
-    # Create a simpler, more direct prompt format that works better with most models
     prompt = f"""Context: {context}
 
 Question: {query}
@@ -192,9 +166,7 @@ Answer:"""
             is_encoder_decoder = getattr(pipeline.model, "is_encoder_decoder", False)
             model_name = HF_QA_MODEL.lower()
             
-            # For T5 and other encoder-decoder models
             if is_encoder_decoder or "t5" in model_name or "bart" in model_name:
-                # For encoder-decoder models, use just the question and context without formatting
                 input_text = f"question: {query} context: {context}"
                 truncated_input = _truncate_text(input_text, HF_MAX_INPUT_LENGTH, provider, tokenizer)
                 
@@ -207,7 +179,6 @@ Answer:"""
                 )
                 answer = results[0]['generated_text']
             else:
-                # For decoder-only models like GPT-2, GPT-Neo, etc.
                 truncated_prompt = _truncate_text(prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
                 
                 # Generate with clear stopping criteria
@@ -218,7 +189,6 @@ Answer:"""
                     pad_token_id=tokenizer.eos_token_id,
                     do_sample=True,
                     temperature=0.7,
-                    # Add these parameters to improve generation quality
                     top_k=50,
                     top_p=0.95,
                     no_repeat_ngram_size=3
@@ -234,7 +204,6 @@ Answer:"""
                     # If "Answer:" not found, take everything after the original prompt
                     answer = full_text[len(truncated_prompt):].strip()
             
-            # Check if answer is empty or too short
             if not answer or len(answer) < 5:
                 # Try a fallback approach - generate from scratch with a simpler prompt
                 fallback_prompt = f"Based on this information: {context}\n\nAnswer this question: {query}"
@@ -256,7 +225,6 @@ Answer:"""
                     )
                     answer = fallback_results[0]['generated_text'][len(truncated_fallback):].strip()
             
-            # If still empty, return a meaningful message
             if not answer or len(answer.strip()) < 5:
                 return "Based on the available information, I couldn't generate a specific answer to your query. Please try asking in a different way."
                 
@@ -269,7 +237,6 @@ Answer:"""
             return f"Error: Could not generate answer using Hugging Face."
     
     elif provider == 'gemini':
-        # Keep your Gemini implementation as is
         try:
             model = client
             truncated_prompt = _truncate_text(prompt, 0, provider)

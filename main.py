@@ -1,19 +1,14 @@
 import sys
 import logging
 from dotenv import load_dotenv
-
-# --- Load Environment Variables ---
-load_dotenv()
-
-# --- Import Modules ---
-# Import config items needed *before* LLM selection (like API key for check)
 from config import GEMINI_API_KEY
 from repository_utils import get_repository
 from document_processor import is_concert_domain, summarize_document
 from qa_handler import answer_question
-from llm_integrator import get_llm_client # Import the client getter
+from llm_integrator import get_llm_client
 
-# Configure basic logging
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
 
 def select_llm_provider() -> str:
@@ -22,27 +17,27 @@ def select_llm_provider() -> str:
         print("\nPlease select the LLM provider:")
         print("  1: Hugging Face (Local Models - Requires 'transformers' and 'torch'/'tensorflow')")
         print("  2: Google Gemini (Cloud API - Requires GOOGLE_API_KEY in .env)")
-        choice = input("Enter choice (1 or 2): ").strip()
-
-        if choice == '1':
+        print("  0: Exit the program")
+        choice = input("Enter choice (0, 1, or 2): ").strip()
+        
+        if choice == '0':
+            print("Exiting program...")
+            sys.exit(0)
+        elif choice == '1':
             print("Selected: Hugging Face")
             return 'huggingface'
         elif choice == '2':
-            # Check if API key exists *before* confirming Gemini choice
             if not GEMINI_API_KEY:
                 print("\nERROR: Google Gemini selected, but GOOGLE_API_KEY is not set in your .env file.")
-                print("Please set the API key or choose Hugging Face.")
-                # Loop back to let the user choose again
+                print("Please set the API key, choose Hugging Face, or exit.")
             else:
                 print("Selected: Google Gemini")
                 return 'gemini'
         else:
-            print("Invalid choice. Please enter 1 or 2.")
+            print("Invalid choice. Please enter 0, 1, or 2.")
 
 
 def print_help():
-    """Prints available commands."""
-    # (No changes needed in this function)
     print("\nAvailable Commands:")
     print("  ADD: <document text>   - Add a new document about a concert tour.")
     print("  QUERY: <your question> - Ask a question about the concert tours.")
@@ -53,7 +48,6 @@ def print_help():
 
 
 def main_loop():
-    """Runs the main interactive loop for the service."""
     logging.info("------------------------------------")
     logging.info(" Concert Tour Information Service ")
     logging.info("------------------------------------")
@@ -65,10 +59,8 @@ def main_loop():
     try:
         # --- Initialize LLM Client (based on selection) ---
         print(f"\nInitializing LLM provider: {chosen_provider_name.upper()}...")
-        # Get the client object AND the validated provider name
         llm_client, active_provider = get_llm_client(chosen_provider_name)
 
-        # Handle initialization failure (e.g., Gemini key missing after selection, model download issue)
         if llm_client is None:
              print(f"\nFATAL ERROR: Failed to initialize LLM provider '{active_provider}'. Check logs and configuration.")
              logging.critical(f"Failed to get LLM client for provider: {active_provider}")
@@ -99,7 +91,6 @@ def main_loop():
             if not user_input:
                 continue
 
-            # --- Handle Commands ---
             if user_input.upper() == "EXIT":
                 logging.info("Exit command received. Shutting down.")
                 print("Exiting service. Goodbye!")
@@ -110,7 +101,6 @@ def main_loop():
                 continue
 
             elif user_input.upper() == "PROVIDER":
-                # Display the provider chosen at the start
                 print(f"Currently active LLM Provider: {active_provider}")
                 continue
 
@@ -130,7 +120,6 @@ def main_loop():
                 if is_concert_domain(document_text):
                     logging.info("Document domain is relevant (Concert Tour).")
                     print(f"Document seems relevant. Generating summary using {active_provider.upper()}...")
-                    # Pass the specific client and provider name
                     summary = summarize_document(document_text, llm_client, active_provider)
 
                     if summary.startswith("Error:"):
@@ -166,7 +155,6 @@ def main_loop():
 
                 logging.info(f"Processing QUERY command: '{query_text}'")
                 print(f"Searching and generating answer using {active_provider.upper()}...")
-                # Pass the specific client and provider name
                 answer = answer_question(query_text, repository, llm_client, active_provider)
 
                 print("\n--- Answer ---")

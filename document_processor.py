@@ -1,7 +1,7 @@
 import logging
-from typing import Any # Added for type hinting
+from typing import Any
 from config import CONCERT_KEYWORDS
-from llm_integrator import generate_summary # Import remains the same
+from llm_integrator import generate_summary
 
 def is_concert_domain(text: str) -> bool:
     """
@@ -11,7 +11,6 @@ def is_concert_domain(text: str) -> bool:
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in CONCERT_KEYWORDS)
 
-# --- Updated function signature ---
 def summarize_document(text: str, llm_client: Any, provider_name: str) -> str:
     """
     Generates a concise summary of the document text using the specified LLM client.

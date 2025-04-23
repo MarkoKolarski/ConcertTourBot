@@ -4,17 +4,14 @@ from dotenv import load_dotenv
 from typing import Any
 import requests
 import os
-from dotenv import load_dotenv
+from repository_utils import get_repository, ConcertRAGRepository
+from document_processor import is_concert_domain, summarize_document
+from qa_handler import answer_question
+from llm_integrator import get_llm_client, generate_qa_answer
 
 from config import (
     GEMINI_API_KEY, GEMINI_API_KEY_ENV_VAR
 )
-
-from repository_utils import get_repository, ConcertRAGRepository
-from document_processor import is_concert_domain, summarize_document
-from qa_handler import answer_question
-from llm_integrator import get_llm_client
-from llm_integrator import generate_qa_answer
 
 load_dotenv()
 
@@ -38,7 +35,6 @@ def perform_online_concert_search(artist_name: str, llm_client: Any, provider_na
     if not artist_name:
         return "Please provide a musician or band name to search for concerts."
     
-    # Get API key from environment variables
     serpapi_key = os.getenv("SERPAPI_KEY")
     if not serpapi_key:
         return "SerpAPI key not found in environment variables. Please add SERPAPI_KEY to your .env file."
@@ -63,7 +59,6 @@ def perform_online_concert_search(artist_name: str, llm_client: Any, provider_na
             logging.error(f"SerpAPI error: {search_data['error']}")
             return f"Error performing search: {search_data['error']}"
         
-        # Extract relevant information from the search results
         search_results = []
         
         # Check for organic results
@@ -149,9 +144,7 @@ If documents are present, the bot will first try to answer from them (RAG). If n
 """)
 
 # --- LLM Provider Selection (using session state) ---
-# Initialize session state for provider if not exists
 if 'llm_provider' not in st.session_state:
-    # Always default to Gemini, regardless of API key status
     st.session_state.llm_provider = 'gemini'
 
 st.sidebar.header("Configuration")
@@ -163,16 +156,13 @@ provider_options = {
 selected_provider_label = st.sidebar.radio(
     "Select LLM Provider:",
     options=list(provider_options.keys()),
-    index=list(provider_options.keys()).index('Google Gemini (API)'),  # Always set Gemini as default in UI
+    index=list(provider_options.keys()).index('Google Gemini (API)'),
     key="provider_radio"
 )
 
-# Update session state based on user selection only if it changed
 if st.session_state.llm_provider != provider_options[selected_provider_label]:
     st.session_state.llm_provider = provider_options[selected_provider_label]
-    # Streamlit handles re-running and re-caching when this session state changes
 
-# Display Gemini API key status
 if st.session_state.llm_provider == 'gemini':
     if GEMINI_API_KEY:
         st.sidebar.success("Gemini API Key Loaded")
@@ -189,7 +179,7 @@ def get_llm_client_cached(provider_name: str) -> Any:
     """Caches the initialization of the LLM client."""
     st.info(f"Initializing {provider_name.upper()} LLM client...")
     try:
-        # Use the get_llm_client function from your module
+
         client, actual_provider_name = get_llm_client(provider_name)
         if client is None:
              st.error(f"Failed to initialize LLM client for {provider_name}. Check logs and configuration.")
@@ -206,7 +196,7 @@ def get_repository_cached() -> ConcertRAGRepository:
     """Caches the initialization of the RAG repository."""
     st.info("Initializing RAG Repository (FAISS Index and Summary Map)...")
     try:
-        # Use the get_repository function from your module
+
         repo = get_repository()
         st.success("RAG Repository initialized.")
         return repo
@@ -215,11 +205,10 @@ def get_repository_cached() -> ConcertRAGRepository:
         logging.error(f"Error initializing RAG Repository: {e}", exc_info=True)
         return None
 
-# Initialize/Get cached resources
+
 llm_client = get_llm_client_cached(st.session_state.llm_provider)
 repository = get_repository_cached()
 
-# Check if initialization failed - stop app if core components are missing
 if llm_client is None or repository is None:
      st.error("Core components failed to initialize. Please check configuration and logs.")
      st.stop()
@@ -231,7 +220,6 @@ if 'messages' not in st.session_state:
 
 # --- Display Chat History ---
 st.subheader("Interaction History")
-# Using a markdown block to display history is simpler than st.empty() for appending
 chat_history_placeholder = st.empty()
 
 def display_messages():
@@ -248,29 +236,25 @@ def display_messages():
         elif msg_type == "error":
              formatted_history += f"❌ *Error: {message}*\n\n"
 
-    # Update the placeholder content
+
     chat_history_placeholder.markdown(formatted_history)
 
-# Initial display of messages
 display_messages()
 
 
 # --- User Input ---
-# Using a key allows Streamlit to manage the input value in session_state automatically
-# We removed the direct assignment to st.session_state.user_input = ""
 user_input = st.text_input("Enter your request (e.g., 'ADD: <text>', 'QUERY: <question>', or Artist/Band Name):", key="user_input_widget")
 process_button = st.button("Process Request")
 
 
 # --- Process User Input ---
 if process_button and user_input:
-    # Append user message immediately to show it's received
     st.session_state.messages.append(("user", user_input))
     display_messages()
 
     response = ""
     user_input_upper = user_input.upper()
-    query_text = user_input.strip() # Get the stripped input early
+    query_text = user_input.strip() 
 
     with st.spinner("Processing..."):
         try:
@@ -319,56 +303,48 @@ COUNT                  - Show the number of documents stored (RAG).
             else:
                  current_doc_count = repository.get_total_documents()
 
-                 # Define phrases that indicate RAG found no info (case-insensitive)
-                 # These should match the messages potentially returned by qa_handler.answer_question
                  not_found_phrases_rag = [
                      "couldn't find specific information related to your query in the ingested documents",
-                     "i couldn't find specific information", # From a previous iteration
-                     "based on the available information, i couldn't generate", # From a previous iteration
-                     "no information about", # From a previous iteration
-                     "no relevant summaries found", # From a previous iteration
+                     "i couldn't find specific information",
+                     "based on the available information, i couldn't generate",
+                     "no information about", 
+                     "no relevant summaries found", 
                  ]
 
-                 # If repository is empty, skip RAG and go directly to online search
                  if current_doc_count == 0:
                      st.session_state.messages.append(("info", f"No documents loaded. Attempting online search for concerts by '{query_text}'..."))
                      display_messages()
                      response = perform_online_concert_search(query_text, llm_client, st.session_state.llm_provider)
 
                  else:
-                     # Repository has documents, try RAG first
+
                      st.session_state.messages.append(("info", f"Documents loaded. Searching RAG for '{query_text}' using {st.session_state.llm_provider.upper()}..."))
                      display_messages()
                      rag_answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
 
-                     # Check if the RAG answer strongly suggests no relevant info was found in the documents
                      lowercased_rag_answer = rag_answer.strip().lower()
                      rag_found_nothing = any(phrase in lowercased_rag_answer for phrase in not_found_phrases_rag) or \
-                                         len(lowercased_rag_answer) < 30 # Also consider very short answers as potentially "not found"
+                                         len(lowercased_rag_answer) < 30
 
                      if rag_found_nothing:
-                         # RAG found nothing, *now* try online search as a fallback
+
                          st.session_state.messages.append(("info", f"RAG found no specific info in documents. Attempting online search for '{query_text}' as a potential artist name..."))
                          display_messages()
                          response = perform_online_concert_search(query_text, llm_client, st.session_state.llm_provider)
                      else:
-                         # RAG found something, use the RAG answer
+
                          st.session_state.messages.append(("info", f"RAG found relevant information."))
                          display_messages()
                          response = rag_answer
-
 
         except Exception as e:
             logging.error(f"An error occurred during request processing: {e}", exc_info=True)
             response = f"An unexpected error occurred: {e}. Please check the application logs."
             st.session_state.messages.append(("error", response)) # Add error specifically
 
-    # Append bot response to history and update display
+
     st.session_state.messages.append(("bot", response))
     display_messages()
-
-    # Note: The problematic line `st.session_state.user_input = ""` is correctly removed.
-    # The input box value will persist until the next interaction or page refresh.
 
 
 # Optional: Display repository status in sidebar
