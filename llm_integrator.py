@@ -114,142 +114,190 @@ def _truncate_text(text: str, max_length: int, provider: str, tokenizer=None) ->
 
 def generate_summary(text: str, client: Any, provider: str) -> str:
     """Generates a summary using the specified LLM client and provider."""
+
     if not client:
         return f"Error: LLM client for provider '{provider}' is not available."
 
     if provider == 'huggingface':
-        try:
-            pipeline = client['summarizer']
-            tokenizer = client['summarizer_tokenizer']
-            truncated_text = _truncate_text(text, HF_MAX_INPUT_LENGTH, provider, tokenizer)
-            summary_result = pipeline(truncated_text, max_length=150, min_length=30, do_sample=False)
-            return summary_result[0]['summary_text'].strip()
-        except Exception as e:
-            logging.error(f"Hugging Face summarization failed: {e}")
-            return "Error: Could not generate summary using Hugging Face."
+        return _generate_summary_huggingface(text, client)
 
     elif provider == 'gemini':
-        try:
-            model = client
-            truncated_text = _truncate_text(text, 0, provider)
-            prompt = f"Summarize the following document about a concert tour:\n\n{truncated_text}\n\nSummary:"
-            response = model.generate_content(prompt)
-            # Robust checking for blocked content or empty response
-            if not response.parts:
-                 block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
-                 logging.warning(f"Gemini summarization blocked or empty: {block_reason}")
-                 return f"Error: Summarization blocked by safety filters or empty response ({block_reason})."
-            return response.text.strip()
-        except Exception as e:
-            logging.error(f"Gemini summarization failed: {e}")
-            return "Error: Could not generate summary using Gemini."
-    else:
-        return f"Error: Invalid LLM provider '{provider}' specified."
+        return _generate_summary_gemini(text, client)
+
+    return f"Error: Invalid LLM provider '{provider}' specified."
+
+
+# ---------------- Hugging Face Summary Handler ---------------- #
+
+def _generate_summary_huggingface(text: str, client: dict) -> str:
+    try:
+        pipeline = client['summarizer']
+        tokenizer = client['summarizer_tokenizer']
+
+        truncated_text = _truncate_text(text, HF_MAX_INPUT_LENGTH, 'huggingface', tokenizer)
+        
+        summary_result = pipeline(
+            truncated_text,
+            max_length=150,
+            min_length=30,
+            do_sample=False
+        )
+
+        return summary_result[0]['summary_text'].strip()
+
+    except Exception as e:
+        logging.error(f"Hugging Face summarization failed: {e}", exc_info=True)
+        return "Error: Could not generate summary using Hugging Face."
+
+
+# ---------------- Gemini Summary Handler ---------------- #
+
+def _generate_summary_gemini(text: str, model: Any) -> str:
+    try:
+        truncated_text = _truncate_text(text, 0, 'gemini')
+        prompt = (
+            "Summarize the following document about a concert tour:\n\n"
+            f"{truncated_text}\n\nSummary:"
+        )
+
+        response = model.generate_content(prompt)
+
+        if not response.parts:
+            block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
+            logging.warning(f"Gemini summarization blocked or empty: {block_reason}")
+            return f"Error: Summarization blocked by safety filters or empty response ({block_reason})."
+
+        return response.text.strip()
+
+    except Exception as e:
+        logging.error(f"Gemini summarization failed: {e}", exc_info=True)
+        return "Error: Could not generate summary using Gemini."
 
 
 def generate_qa_answer(query: str, context: str, client: Any, provider: str) -> str:
     """Generates an answer to a query based on context using the specified LLM."""
+
     if not client:
         return f"Error: LLM client for provider '{provider}' is not available."
-    
+
     prompt = f"""Context: {context}
 
 Question: {query}
 
 Answer:"""
-    
+
     if provider == 'huggingface':
-        try:
-            pipeline = client['qa_generator']
-            tokenizer = client['qa_tokenizer']
-            
-            # Check model type
-            is_encoder_decoder = getattr(pipeline.model, "is_encoder_decoder", False)
-            model_name = HF_QA_MODEL.lower()
-            
-            if is_encoder_decoder or "t5" in model_name or "bart" in model_name:
-                input_text = f"question: {query} context: {context}"
-                truncated_input = _truncate_text(input_text, HF_MAX_INPUT_LENGTH, provider, tokenizer)
-                
-                results = pipeline(
-                    truncated_input, 
-                    max_length=200, 
-                    num_return_sequences=1,
-                    do_sample=True,
-                    temperature=0.7
-                )
-                answer = results[0]['generated_text']
-            else:
-                truncated_prompt = _truncate_text(prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
-                
-                # Generate with clear stopping criteria
-                results = pipeline(
-                    truncated_prompt,
-                    max_new_tokens=200,
-                    num_return_sequences=1,
-                    pad_token_id=tokenizer.eos_token_id,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_k=50,
-                    top_p=0.95,
-                    no_repeat_ngram_size=3
-                )
-                
-                # Extract only the answer part
-                full_text = results[0]['generated_text']
-                answer_start = full_text.find("Answer:") + len("Answer:")
-                
-                if answer_start >= len("Answer:"):
-                    answer = full_text[answer_start:].strip()
-                else:
-                    # If "Answer:" not found, take everything after the original prompt
-                    answer = full_text[len(truncated_prompt):].strip()
-            
-            if not answer or len(answer) < 5:
-                # Try a fallback approach - generate from scratch with a simpler prompt
-                fallback_prompt = f"Based on this information: {context}\n\nAnswer this question: {query}"
-                truncated_fallback = _truncate_text(fallback_prompt, HF_MAX_INPUT_LENGTH, provider, tokenizer)
-                
-                if is_encoder_decoder:
-                    fallback_results = pipeline(
-                        truncated_fallback,
-                        max_length=200,
-                        num_return_sequences=1
-                    )
-                    answer = fallback_results[0]['generated_text']
-                else:
-                    fallback_results = pipeline(
-                        truncated_fallback,
-                        max_new_tokens=200,
-                        num_return_sequences=1,
-                        pad_token_id=tokenizer.eos_token_id
-                    )
-                    answer = fallback_results[0]['generated_text'][len(truncated_fallback):].strip()
-            
-            if not answer or len(answer.strip()) < 5:
-                return "Based on the available information, I couldn't generate a specific answer to your query. Please try asking in a different way."
-                
-            return answer.strip()
-            
-        except Exception as e:
-            logging.error(f"Hugging Face QA generation failed: {e}")
-            traceback_info = traceback.format_exc()
-            logging.error(f"Traceback: {traceback_info}")
-            return f"Error: Could not generate answer using Hugging Face."
-    
+        return _generate_answer_huggingface(query, context, prompt, client)
+
     elif provider == 'gemini':
-        try:
-            model = client
-            truncated_prompt = _truncate_text(prompt, 0, provider)
-            response = model.generate_content(truncated_prompt)
-            
-            if not response.parts:
-                block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
-                logging.warning(f"Gemini QA blocked or empty: {block_reason}")
-                return f"Error: Answer generation blocked by safety filters or empty response ({block_reason})."
-            return response.text.strip()
-        except Exception as e:
-            logging.error(f"Gemini QA generation failed: {e}")
-            return "Error: Could not generate answer using Gemini."
+        return _generate_answer_gemini(prompt, client)
+
+    return f"Error: Invalid LLM provider '{provider}' specified."
+
+
+# ---------------- Hugging Face Handler ---------------- #
+
+def _generate_answer_huggingface(query: str, context: str, prompt: str, client: dict) -> str:
+    try:
+        pipeline = client['qa_generator']
+        tokenizer = client['qa_tokenizer']
+        is_encoder_decoder = getattr(pipeline.model, "is_encoder_decoder", False)
+        model_name = HF_QA_MODEL.lower()
+
+        if is_encoder_decoder or "t5" in model_name or "bart" in model_name:
+            return _handle_encoder_decoder_model(query, context, pipeline, tokenizer)
+        else:
+            return _handle_decoder_only_model(prompt, query, context, pipeline, tokenizer)
+
+    except Exception as e:
+        logging.error(f"Hugging Face QA generation failed: {e}")
+        logging.error("Traceback:\n" + traceback.format_exc())
+        return "Error: Could not generate answer using Hugging Face."
+
+
+def _handle_encoder_decoder_model(query, context, pipeline, tokenizer):
+    input_text = f"question: {query} context: {context}"
+    truncated_input = _truncate_text(input_text, HF_MAX_INPUT_LENGTH, 'huggingface', tokenizer)
+
+    results = pipeline(
+        truncated_input,
+        max_length=200,
+        num_return_sequences=1,
+        do_sample=True,
+        temperature=0.7
+    )
+
+    answer = results[0].get('generated_text', '').strip()
+    return _validate_or_fallback_answer(answer, query, context, pipeline, tokenizer, is_encoder_decoder=True)
+
+
+def _handle_decoder_only_model(prompt, query, context, pipeline, tokenizer):
+    truncated_prompt = _truncate_text(prompt, HF_MAX_INPUT_LENGTH, 'huggingface', tokenizer)
+
+    results = pipeline(
+        truncated_prompt,
+        max_new_tokens=200,
+        num_return_sequences=1,
+        pad_token_id=tokenizer.eos_token_id,
+        do_sample=True,
+        temperature=0.7,
+        top_k=50,
+        top_p=0.95,
+        no_repeat_ngram_size=3
+    )
+
+    full_text = results[0].get('generated_text', '')
+    answer = _extract_answer_from_text(full_text, truncated_prompt)
+
+    return _validate_or_fallback_answer(answer, query, context, pipeline, tokenizer, is_encoder_decoder=False)
+
+
+def _extract_answer_from_text(full_text: str, prompt: str) -> str:
+    answer_start = full_text.find("Answer:") + len("Answer:")
+    if "Answer:" in full_text and answer_start < len(full_text):
+        return full_text[answer_start:].strip()
+    return full_text[len(prompt):].strip()
+
+
+def _validate_or_fallback_answer(answer, query, context, pipeline, tokenizer, is_encoder_decoder):
+    if answer and len(answer.strip()) >= 5:
+        return answer.strip()
+
+    # Fallback approach
+    fallback_prompt = f"Based on this information: {context}\n\nAnswer this question: {query}"
+    truncated_fallback = _truncate_text(fallback_prompt, HF_MAX_INPUT_LENGTH, 'huggingface', tokenizer)
+
+    if is_encoder_decoder:
+        results = pipeline(truncated_fallback, max_length=200, num_return_sequences=1)
     else:
-        return f"Error: Invalid LLM provider '{provider}' specified."
+        results = pipeline(
+            truncated_fallback,
+            max_new_tokens=200,
+            num_return_sequences=1,
+            pad_token_id=tokenizer.eos_token_id
+        )
+
+    fallback_answer = results[0].get('generated_text', '').strip()
+    if fallback_answer and len(fallback_answer) >= 5:
+        return fallback_answer
+
+    return "Based on the available information, I couldn't generate a specific answer to your query. Please try asking in a different way."
+
+
+# ---------------- Gemini Handler ---------------- #
+
+def _generate_answer_gemini(prompt: str, model) -> str:
+    try:
+        truncated_prompt = _truncate_text(prompt, 0, 'gemini')
+        response = model.generate_content(truncated_prompt)
+
+        if not response.parts:
+            block_reason = getattr(response.prompt_feedback, 'block_reason', 'Unknown')
+            logging.warning(f"Gemini QA blocked or empty: {block_reason}")
+            return f"Error: Answer generation blocked by safety filters or empty response ({block_reason})."
+
+        return response.text.strip()
+
+    except Exception as e:
+        logging.error(f"Gemini QA generation failed: {e}")
+        return "Error: Could not generate answer using Gemini."

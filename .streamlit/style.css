@@ -1,0 +1,26 @@
+.big-font {
+    font-size:20px !important;
+    font-weight: bold;
+}
+.stChatMessage[data-testid="stChatMessage"]:has(.stMarkdown) {
+    margin-bottom: 10px;
+}
+.main .block-container {
+    padding: 1rem 5%;
+}
+h1 {
+    text-align: center;
+    color: #004d40;
+    margin-bottom: 0.5em;
+}
+.stAlert {
+    border-radius: 10px;
+    margin-bottom: 10px;
+}
+section[data-testid="stSidebar"] {
+    width: 300px !important;
+    padding-right: 1rem;
+}
+.stRadio > label {
+    font-weight: bold;
+}
