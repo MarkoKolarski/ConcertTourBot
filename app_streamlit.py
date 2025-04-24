@@ -13,10 +13,15 @@ from config import (
     GEMINI_API_KEY, GEMINI_API_KEY_ENV_VAR
 )
 
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
+
 DEFAULT_PROVIDER = 'gemini'
 PROVIDER_OPTIONS = {
-    'Google Gemini (API)': 'gemini',
-    'Hugging Face (Local)': 'huggingface'
+    'Google Gemini (API) (Recommended)': 'gemini',
+    'Hugging Face (Local)'
+    '(May be error-prone)': 'huggingface'
 }
 PAGE_TITLE = "Concert Bot 🎶"
 SIDEBAR_TITLE = "Settings"
@@ -101,7 +106,6 @@ def _validate_concert_response(response: str, artist_name: str) -> str:
 
     cleaned = response.strip().lower()
 
-    # Check for vague/generic answers
     vague_phrases = [
         "could not find",
         "based on the available information",
@@ -265,13 +269,11 @@ def initialize_provider_selection():
     if 'llm_provider' not in st.session_state:
         st.session_state.llm_provider = DEFAULT_PROVIDER
 
-    # Determine the index of the current provider for the radio button
     try:
         default_index = list(PROVIDER_OPTIONS.values()).index(st.session_state.llm_provider)
     except ValueError:
         default_index = 0 
 
-    # Render radio buttons
     selected_label = st.sidebar.radio(
         "Select LLM Provider:",
         options=list(PROVIDER_OPTIONS.keys()),
@@ -289,10 +291,20 @@ def initialize_chat_session():
     """Initialize chat session state if not already present."""
     if 'messages' not in st.session_state:
         st.session_state.messages = []
+        
+    if 'messages_displayed' not in st.session_state:
+        st.session_state.messages_displayed = False
 
 
 def display_messages(chat_container=None):
-    """Display chat history in the provided container or directly in the app."""
+    """
+    Display chat history in the provided container or directly in the app.
+    Modified to prevent duplication of messages.
+    """
+
+    if st.session_state.messages_displayed:
+        return
+        
     if chat_container:
         chat_container.empty()
         container = chat_container
@@ -311,12 +323,13 @@ def display_messages(chat_container=None):
                 st.info(f"ℹ️ {message}")
             elif msg_type == "error":
                 st.error(f"❌ {message}")
+    
+    st.session_state.messages_displayed = True
 
 
 def render_chat_input():
     """Render the user input area and process button."""
-    input_container = st.container()
-    with input_container:
+    with st.form(key="user_input_form", clear_on_submit=True):
         user_input = st.text_input(
             "Enter your request:",
             placeholder="e.g., 'ADD: document text', 'QUERY: question', or 'Billie Eilish'",
@@ -326,7 +339,7 @@ def render_chat_input():
 
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
-            process_button = st.button("Send Request", use_container_width=True)
+            process_button = st.form_submit_button("Send Request", use_container_width=True)
 
     return user_input, process_button
 
@@ -424,6 +437,9 @@ def handle_repository_search(query_text, repository, llm_client, not_found_phras
     )
     rag_answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
     
+    if query_text.lower() in rag_answer.lower() and "answer:" in rag_answer.lower() and "there is no mention of" in rag_answer.lower():
+        return handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status)
+    
     if rag_found_nothing(rag_answer, not_found_phrases_rag):
         return handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status)
     else:
@@ -434,7 +450,29 @@ def handle_repository_search(query_text, repository, llm_client, not_found_phras
 def rag_found_nothing(rag_answer, not_found_phrases_rag):
     """Check if RAG found no relevant information."""
     lowercased_rag_answer = rag_answer.strip().lower()
-    return any(phrase in lowercased_rag_answer for phrase in not_found_phrases_rag) or len(lowercased_rag_answer) < 30
+    
+    additional_phrases = [
+        "there is no information provided about",
+        "therefore, there is no answer to provide",
+        "no information was found",
+        "i don't have any information about",
+        "i couldn't find any information about",
+        "there are no details available regarding",
+        "no data is available on",
+        "no context was provided about",
+        "there is no mention of",
+        "no mention of",
+        "not mentioned in",
+        "couldn't find any mention of",
+    ]
+    
+    all_phrases = not_found_phrases_rag + additional_phrases
+
+    if "answer:" in lowercased_rag_answer and "there is no mention of" in lowercased_rag_answer:
+        return True
+
+    return (any(phrase in lowercased_rag_answer for phrase in all_phrases) or 
+            len(lowercased_rag_answer) < 30)
 
 
 def handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status):
@@ -491,7 +529,14 @@ def handle_general_query(query_text, repository, llm_client, processing_status):
     current_doc_count = repository.get_total_documents()
     serpapi_key_present = os.getenv("SERPAPI_KEY")
 
-    # Define phrases that indicate RAG found no info (case-insensitive)
+
+     # Clean up the query text if it starts with QUEST:
+    if query_text.upper().startswith("QUEST:"):
+        search_term = query_text[6:].strip()
+        if search_term.startswith("'") and search_term.endswith("'"):
+            search_term = search_term[1:-1]
+        query_text = search_term
+        
     not_found_phrases_rag = [
         "couldn't find specific information related to your query in the ingested documents",
         "i couldn't find specific information",
@@ -499,7 +544,9 @@ def handle_general_query(query_text, repository, llm_client, processing_status):
         "no information about",
         "no relevant summaries found",
         "could not find specific upcoming concert information",
-        "no concert information was found based on the search results"
+        "no concert information was found based on the search results",
+        "there is no mention of",
+        "answer: there is no mention of"
     ]
 
     # Check if repository is empty
@@ -518,54 +565,36 @@ def handle_general_query(query_text, repository, llm_client, processing_status):
 
 # --- MAIN APPLICATION CODE ---
 
-# Setup logging and environment
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
-
-# Configure page
 st.set_page_config(
     page_title=PAGE_TITLE,
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Apply custom styling
-# apply_custom_styles()
-
-# Display page title and welcome message
 st.title(PAGE_TITLE)
 display_welcome_message()
 
-# Configure sidebar and display API key status
 st.sidebar.header(SIDEBAR_TITLE)
 display_api_key_status()
 initialize_provider_selection()
 
-# Initialize LLM + Repository with feedback
 llm_client, repository = initialize_llm_and_repo()
 
-# Initialize session state for chat
 initialize_chat_session()
 
-# Display chat history in a scrollable container
 st.subheader("Interaction History")
 chat_container = st.container(height=CHAT_CONTAINER_HEIGHT)
 display_messages(chat_container)
 
-# Render user input area and return input/button state
 user_input, process_button = render_chat_input()
 
-# Process user input if button is clicked
 if process_button and user_input:
-    # Append and display user message
+    st.session_state.messages_displayed = False
     st.session_state.messages.append(("user", user_input))
-    display_messages(chat_container)
-
     response = ""
     query_text = user_input.strip()
     user_input_upper = user_input.upper()
 
-    # Process the user input and generate response
     with st.status("Processing request...", expanded=True) as processing_status:
         try:
             response = process_user_request(
@@ -582,11 +611,9 @@ if process_button and user_input:
             processing_status.update(label="An unexpected error occurred.", state="error")
             st.session_state.messages.append(("error", response))
 
-    # Append bot response to history and redraw display
     st.session_state.messages.append(("bot", response))
     display_messages(chat_container)
 
-# Display repository status in sidebar footer
 st.sidebar.markdown("---")
 st.sidebar.subheader("Repository Status")
 if repository:

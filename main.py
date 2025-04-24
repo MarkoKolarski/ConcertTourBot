@@ -23,10 +23,10 @@ def select_llm_provider() -> str:
 
     def print_provider_menu():
         print("Please choose which LLM provider you would like to use:\n")
-        print("  1: Google Gemini (Recommended)")
+        print("  1: Google Gemini (API) (Recommended)")
         print("     - Cloud-based model with high reliability and accuracy")
         print("     - Requires a (free) GOOGLE_API_KEY\n")
-        print("  2: Hugging Face (Local Model)")
+        print("  2: Hugging Face (Local)")
         print("     - Runs locally, lightweight and fast")
         print("     - May be less reliable and prone to hallucinations\n")
         print("  0: Exit the program\n")
