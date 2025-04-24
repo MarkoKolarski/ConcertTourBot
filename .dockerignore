@@ -1,0 +1,37 @@
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Ignore IDE-specific files
+.vscode/
+.idea/
+*.code-workspace
+
+# Ignore Git-specific files
+.git/
+.gitignore
+
+# Ignore environment files
+.env
+.env.*
+
+# Ignore build artifacts
+build/
+dist/
+*.egg-info/
+*.manifest
+*.spec
+
+# Ignore unnecessary documentation or assets
+docs/
+*.md
