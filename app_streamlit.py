@@ -2,320 +2,626 @@ import streamlit as st
 import logging
 from dotenv import load_dotenv
 from typing import Any
-from googlesearch import search
-
-# Load environment variables first
-load_dotenv()
-
-# --- Configure basic logging for visibility (Streamlit handles some output) ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
-
-# --- Import your modules ---
-# Add the current directory to sys.path if needed, though Streamlit usually runs from the script dir
-# sys.path.append('.')
-
-from config import (
-    LLM_PROVIDER, GEMINI_API_KEY, GEMINI_API_KEY_ENV_VAR,
-    CONCERT_KEYWORDS # Potentially useful for heuristic check in bonus feature
-)
+import requests
+import os
 from repository_utils import get_repository, ConcertRAGRepository
 from document_processor import is_concert_domain, summarize_document
 from qa_handler import answer_question
-from llm_integrator import get_llm_client # Used inside cached function
-from llm_integrator import generate_qa_answer # Re-using for concert search answer generation
+from llm_integrator import get_llm_client, generate_qa_answer
 
-# --- Bonus Feature: Online Search (using the provided tool) ---
-# The code interpreter environment automatically provides the Google Search tool.
-# We don't need explicit SerpAPI/Bing imports here, just call the tool.
+from config import (
+    GEMINI_API_KEY, GEMINI_API_KEY_ENV_VAR
+)
+
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s] - %(message)s')
+
+DEFAULT_PROVIDER = 'gemini'
+PROVIDER_OPTIONS = {
+    'Google Gemini (API) (Recommended)': 'gemini',
+    'Hugging Face (Local)'
+    '(May be error-prone)': 'huggingface'
+}
+PAGE_TITLE = "Concert Bot 🎶"
+SIDEBAR_TITLE = "Settings"
+CHAT_CONTAINER_HEIGHT = 400
+GEMINI_KEY_STATUS_LABEL = "Gemini API Key"
+SERPAPI_KEY_STATUS_LABEL = "SerpAPI Key"
+
+def _fetch_serpapi_results(query: str, api_key: str) -> dict:
+    """Fetches search results from SerpAPI."""
+    url = "https://serpapi.com/search"
+    params = {
+        "q": query,
+        "api_key": api_key,
+        "engine": "google"
+    }
+
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    return response.json()
+
+
+def _extract_search_results(data: dict, artist_name: str) -> list:
+    """Extracts relevant search results from SerpAPI response."""
+    results = []
+
+    # Answer Box
+    answer_box = data.get("answer_box", {})
+    if answer_box.get("snippet"):
+        results.append({
+            "title": answer_box.get("title", "Featured Snippet"),
+            "snippet": answer_box.get("snippet", ""),
+            "link": answer_box.get("link", "")
+        })
+
+    # Knowledge Graph
+    knowledge_graph = data.get("knowledge_graph", {})
+    if knowledge_graph.get("description"):
+        results.append({
+            "title": knowledge_graph.get("title", artist_name),
+            "snippet": knowledge_graph.get("description", ""),
+            "link": knowledge_graph.get("link", "")
+        })
+
+    # Organic Results
+    for result in data.get("organic_results", [])[:5]:  # Limit to 5
+        if "snippet" in result:
+            results.append({
+                "title": result.get("title", ""),
+                "snippet": result.get("snippet", ""),
+                "link": result.get("link", "")
+            })
+
+    return results
+
+
+def _build_llm_context(results: list, artist_name: str) -> str:
+    """Formats results into a readable context string for LLM."""
+    context = f"Search results for '{artist_name} upcoming concerts':\n\n"
+    for i, result in enumerate(results):
+        context += f"--- Result {i+1} ---\n"
+        if result.get("title"):
+            context += f"Title: {result['title']}\n"
+        if result.get("snippet"):
+            context += f"Snippet: {result['snippet']}\n"
+        if result.get("link"):
+            context += f"Link: {result['link']}\n"
+        context += "\n"
+
+    max_len = 3500
+    if len(context) > max_len:
+        logging.warning(f"Search context truncated to {max_len} characters.")
+        context = context[:max_len] + "\n... (context truncated)"
+
+    return context
+
+
+def _validate_concert_response(response: str, artist_name: str) -> str:
+    """Validates LLM response and returns a user-facing message."""
+    if response.startswith("Error:"):
+        logging.error(f"LLM synthesis error: {response}")
+        return f"Found information online, but couldn't synthesize a clear answer: {response}"
+
+    cleaned = response.strip().lower()
+
+    vague_phrases = [
+        "could not find",
+        "based on the available information",
+        "i couldn't generate a specific answer",
+        "no specific dates",
+        "no concert information was found"
+    ]
+
+    if not cleaned or len(cleaned) < 30 or any(phrase in cleaned for phrase in vague_phrases):
+        return f"Found online information for {artist_name}, but the bot could not synthesize specific upcoming concert dates from the search results."
+
+    return f"Information about {artist_name}'s upcoming concerts:\n\n{response.strip()}"
+
 
 def perform_online_concert_search(artist_name: str, llm_client: Any, provider_name: str) -> str:
     """
     Performs an online search for upcoming concerts for a given artist
-    and uses the LLM to synthesize an answer from the search results.
-
-    Args:
-        artist_name: The name of the musician or band.
-        llm_client: The initialized LLM client object (HF dict or Gemini model).
-        provider_name: The name of the active provider ('huggingface' or 'gemini').
-
-    Returns:
-        A string containing the synthesized answer or an error message.
+    and uses the LLM to synthesize an answer from the search results via SerpAPI.
     """
     if not artist_name:
         return "Please provide a musician or band name to search for concerts."
 
+    serpapi_key = os.getenv("SERPAPI_KEY")
+    if not serpapi_key:
+        logging.error("perform_online_concert_search called without SerpAPI key present.")
+        return "Error: SerpAPI key is missing, cannot perform online search."
+
     logging.info(f"Performing online search for concerts by: {artist_name}")
-    search_query = f"{artist_name} upcoming concerts tour dates schedule"
-    search_results = ""
+    search_query = f"{artist_name} upcoming concerts tour dates 2025"
 
     try:
-        # Use the available Google Search tool
-        print(f"Searching online for: {search_query}") # Print to Streamlit console/logs
-        search_response = [{"link": url} for url in search(search_query, num_results=10)]
+        search_data = _fetch_serpapi_results(search_query, serpapi_key)
+        if "error" in search_data:
+            return f"Error performing search: {search_data['error']}"
 
-        # Process search results - this is a simplified example.
-        # The structure of search_response depends on the tool's output.
-        # Let's assume it might have 'answerBox', 'organic_results' with 'snippet', 'title', 'link'.
-        snippets = []
-        if 'answerBox' in search_response[0] and 'snippet' in search_response[0]['answerBox']:
-             snippets.append(search_response[0]['answerBox']['snippet'])
-        if 'organic_results' in search_response[0]:
-            for result in search_response[0]['organic_results']:
-                if 'snippet' in result:
-                    snippets.append(result['snippet'])
+        search_results = _extract_search_results(search_data, artist_name)
 
-        if not snippets:
-            logging.warning(f"No relevant search snippets found for '{artist_name}' concerts.")
-            return f"Could not find upcoming concert information for {artist_name} online."
+        if not search_results:
+            logging.warning(f"No search results found for {artist_name} concerts")
+            return f"No concert information found for {artist_name}. They may not have announced any upcoming concerts yet or the search did not return relevant results."
 
-        # Join snippets to create context for the LLM
-        context = "\n---\n".join(snippets)
-        logging.info(f"Context from search results for LLM:\n{context[:500]}...")
+        context = _build_llm_context(search_results, artist_name)
+        llm_query = f"Summarize upcoming concert details for {artist_name} based *only* on the provided search results."
 
-        # Use the LLM to synthesize the answer from the search results
-        qa_prompt = f"""Based *only* on the following online search results, summarize the upcoming concert dates, locations, or tour information for the artist "{artist_name}". If no specific dates are mentioned, state that based on the results.
+        logging.info(f"Sending search results to {provider_name} for synthesis")
+        concert_info = generate_qa_answer(llm_query, context, llm_client, provider_name)
 
-Search Results:
-{context}
+        return _validate_concert_response(concert_info, artist_name)
 
-Answer:
-"""
-        logging.info(f"Sending search results to LLM for synthesis ({provider_name}).")
-        # Re-use the generate_qa_answer function which takes context and query
-        # Here, the 'query' is implicit in the prompt, and 'context' is the search results.
-        # We'll pass the prompt as query and context as empty or maybe pass the relevant snippets
-        # Let's adjust generate_qa_answer slightly or create a new function if needed.
-        # Looking at generate_qa_answer, it takes query and context. Let's format it like that.
-        synth_answer = generate_qa_answer(f"Summarize upcoming concert dates for {artist_name} based on the search results.", context, llm_client, provider_name)
+    except requests.exceptions.RequestException as req_err:
+        logging.error(f"SerpAPI request error: {req_err}", exc_info=True)
+        return f"Network or request error during search for {artist_name}: {str(req_err)}. Check your SerpAPI key and network connection."
 
-
-        if synth_answer.startswith("Error:"):
-             logging.error(f"LLM synthesis of search results failed ({provider_name}): {synth_answer}")
-             return f"Found information online, but couldn't synthesize a clear answer: {synth_answer}"
-
-        if not synth_answer or len(synth_answer.strip()) < 10: # Basic check for empty/short answer
-             return f"Found information online, but the summary is unclear. Try a different search query or check sources manually for {artist_name}."
-
-
-        return f"Based on online search results:\n\n{synth_answer.strip()}"
-
-    except NameError:
-        return "Online search tool (Google Search) is not available in this environment."
     except Exception as e:
-        logging.error(f"An error occurred during online concert search for '{artist_name}': {e}", exc_info=True)
-        return f"An error occurred while searching for concerts for {artist_name}: {e}"
+        logging.error(f"Unexpected error in concert search: {str(e)}", exc_info=True)
+        return f"An unexpected error occurred while searching for concerts for {artist_name}: {str(e)}. Please check the logs for details."
 
 
-# --- Streamlit App Initialization ---
+def display_welcome_message():
+    """Display welcome message and usage instructions."""
+    with st.container(border=True):
+        st.markdown("""
+        Welcome to the **Concert Tour Information Bot**! I can help you manage information about
+        upcoming concert tours and find details about artists' live performances.
+        """)
+        st.markdown("""
+        Type your request below. You can use commands or just enter a query/artist name:
+        - **ADD:** `<document text>`: Add a new document about a concert tour.
+        - **QUERY:** `<your question>`: Ask a question based on added documents.
+        - **COUNT**: See how many documents are stored.
+        - Enter **Artist or Band Name**: Search online for concerts if RAG finds no info or repo is empty.
+        """)
+        st.markdown("---")
+        st.markdown("#### 🔑 API Key Requirements")
+        st.markdown(f"""
+        This application uses external services that require API keys for full functionality:
+        - **`{GEMINI_API_KEY_ENV_VAR}`**: Required for the **Google Gemini** LLM provider. If this key is missing, you will only be able to use the Hugging Face (Local) provider.
+        - **`SERPAPI_KEY`**: Required for the **Online Concert Search** functionality. If this key is missing, the bot cannot perform web searches for concert dates when needed.
 
-st.set_page_config(page_title="Concert Tour Info Bot", layout="wide")
+        Please add these keys to your `.env` file located in the project's root directory.
+        """)
 
-st.title("Concert Tour Information Bot")
-st.markdown("""
-Welcome to the Concert Tour Info Bot!
-You can **ADD** documents about concert tours or **QUERY** existing information.
-If no documents are added, you can enter an **artist or band name** to search for their upcoming concerts online.
-""")
 
-# --- LLM Provider Selection (using session state) ---
-# Initialize session state for provider if not exists
-if 'llm_provider' not in st.session_state:
-    # Default to Hugging Face if GEMINI_API_KEY is missing, otherwise Gemini
-    st.session_state.llm_provider = 'huggingface' if not GEMINI_API_KEY else 'gemini'
+def display_api_key_status():
+    """Display the status of required API keys in the sidebar."""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("API Status")
 
-st.sidebar.header("Configuration")
-provider_options = {'Hugging Face (Local)': 'huggingface'}
-if GEMINI_API_KEY:
-     provider_options['Google Gemini (API)'] = 'gemini'
-
-selected_provider_label = st.sidebar.radio(
-    "Select LLM Provider:",
-    options=list(provider_options.keys()),
-    index=list(provider_options.values()).index(st.session_state.llm_provider)
-)
-# Update session state based on user selection
-st.session_state.llm_provider = provider_options[selected_provider_label]
-
-# Display Gemini API key status
-if st.session_state.llm_provider == 'gemini':
     if GEMINI_API_KEY:
-        st.sidebar.success("Gemini API Key Loaded")
+        st.sidebar.success(f"✅ {GEMINI_KEY_STATUS_LABEL} Loaded")
     else:
-         st.sidebar.error(f"Gemini API Key ({GEMINI_API_KEY_ENV_VAR}) not found in .env")
-         st.warning("Gemini API key not set. Please set it in your .env file to use the Gemini provider.")
+        st.sidebar.warning(f"⚠️ {GEMINI_KEY_STATUS_LABEL} ({GEMINI_API_KEY_ENV_VAR}) not found")
+
+    if os.getenv("SERPAPI_KEY"):
+        st.sidebar.success("✅ SerpAPI Key Loaded (Online Search Enabled)")
+    else:
+        st.sidebar.warning("⚠️ SerpAPI Key not found")
 
 
-# --- Cached Resources Initialization ---
-# These functions will run only once per session or when dependencies change
-
-@st.cache_resource(hash_funcs={type(st.session_state): id})
+@st.cache_resource(hash_funcs={str: id})
 def get_llm_client_cached(provider_name: str) -> Any:
-    """Caches the initialization of the LLM client."""
+    """Initialize and cache the LLM client."""
+    if provider_name == 'gemini' and not GEMINI_API_KEY:
+        logging.error(f"Attempted to initialize Gemini LLM, but {GEMINI_API_KEY_ENV_VAR} is missing.")
+        st.error(f"Cannot initialize Google Gemini LLM. {GEMINI_API_KEY_ENV_VAR} is not set.")
+        return None
+
     st.info(f"Initializing {provider_name.upper()} LLM client...")
     try:
-        # Use the get_llm_client function from your module
-        client, actual_provider_name = get_llm_client(provider_name)
+        client, actual_provider = get_llm_client(provider_name)
         if client is None:
-             st.error(f"Failed to initialize LLM client for {provider_name}.")
-        else:
-             st.success(f"{actual_provider_name.upper()} LLM client initialized.")
+            st.error(f"Failed to initialize LLM client for {provider_name}. Check logs.")
+            return None
+
+        st.success(f"{actual_provider.upper()} LLM client initialized.")
         return client
     except Exception as e:
-        st.error(f"Error initializing LLM client ({provider_name}): {e}")
         logging.error(f"Error initializing LLM client ({provider_name}): {e}", exc_info=True)
+        st.error(f"Error initializing LLM client ({provider_name}): {e}")
         return None
+
 
 @st.cache_resource
 def get_repository_cached() -> ConcertRAGRepository:
-    """Caches the initialization of the RAG repository."""
+    """Initialize and cache the RAG repository."""
     st.info("Initializing RAG Repository (FAISS Index and Summary Map)...")
     try:
-        # Use the get_repository function from your module
         repo = get_repository()
         st.success("RAG Repository initialized.")
         return repo
     except Exception as e:
-        st.error(f"Error initializing RAG Repository: {e}")
         logging.error(f"Error initializing RAG Repository: {e}", exc_info=True)
+        st.error(f"Error initializing RAG Repository: {e}")
         return None
 
-# Initialize/Get cached resources
-llm_client = get_llm_client_cached(st.session_state.llm_provider)
-repository = get_repository_cached()
 
-# Check if initialization failed
-if llm_client is None or repository is None:
-     st.error("Core components failed to initialize. Please check logs and configuration.")
-     st.stop() # Stop the app if essential components are missing
+def initialize_llm_and_repo():
+    """Initialize both LLM client and repository with visual feedback."""
+    with st.status(f"Initializing {st.session_state.llm_provider.upper()} LLM...", expanded=True) as status_llm:
+        llm_client = get_llm_client_cached(st.session_state.llm_provider)
+        if not llm_client:
+            status_llm.update(label=f"Failed to initialize {st.session_state.llm_provider.upper()} LLM.", state="error", expanded=True)
+            st.stop()
+        status_llm.update(label=f"{st.session_state.llm_provider.upper()} LLM initialized.", state="complete", expanded=False)
+
+    with st.status("Initializing RAG Repository...", expanded=True) as status_repo:
+        repository = get_repository_cached()
+        if not repository:
+            status_repo.update(label="Failed to initialize RAG Repository.", state="error", expanded=True)
+            st.error("Fatal Error: Could not initialize the RAG Repository.")
+            st.stop()
+        doc_count = repository.get_total_documents()
+        status_repo.update(label=f"RAG Repository initialized. Documents loaded: {doc_count}", state="complete", expanded=False)
+
+    return llm_client, repository
 
 
-# --- Session State for Chat History ---
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
+def initialize_provider_selection():
+    """Initialize and manage the LLM provider selection in the sidebar."""
 
-# --- Display Chat History ---
+    if 'llm_provider' not in st.session_state:
+        st.session_state.llm_provider = DEFAULT_PROVIDER
+
+    try:
+        default_index = list(PROVIDER_OPTIONS.values()).index(st.session_state.llm_provider)
+    except ValueError:
+        default_index = 0 
+
+    selected_label = st.sidebar.radio(
+        "Select LLM Provider:",
+        options=list(PROVIDER_OPTIONS.keys()),
+        index=default_index,
+        key="provider_radio"
+    )
+
+    # Update session state if changed
+    selected_value = PROVIDER_OPTIONS[selected_label]
+    if st.session_state.llm_provider != selected_value:
+        st.session_state.llm_provider = selected_value
+
+
+def initialize_chat_session():
+    """Initialize chat session state if not already present."""
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
+        
+    if 'messages_displayed' not in st.session_state:
+        st.session_state.messages_displayed = False
+
+
+def display_messages(chat_container=None):
+    """
+    Display chat history in the provided container or directly in the app.
+    Modified to prevent duplication of messages.
+    """
+
+    if st.session_state.messages_displayed:
+        return
+        
+    if chat_container:
+        chat_container.empty()
+        container = chat_container
+    else:
+        container = st
+
+    with container:
+        for msg_type, message in st.session_state.messages:
+            if msg_type == "user":
+                with st.chat_message("user"):
+                    st.markdown(message)
+            elif msg_type == "bot":
+                with st.chat_message("assistant"):
+                    st.markdown(message)
+            elif msg_type == "info":
+                st.info(f"ℹ️ {message}")
+            elif msg_type == "error":
+                st.error(f"❌ {message}")
+    
+    st.session_state.messages_displayed = True
+
+
+def render_chat_input():
+    """Render the user input area and process button."""
+    with st.form(key="user_input_form", clear_on_submit=True):
+        user_input = st.text_input(
+            "Enter your request:",
+            placeholder="e.g., 'ADD: document text', 'QUERY: question', or 'Billie Eilish'",
+            key="user_input_widget",
+            label_visibility="collapsed"
+        )
+
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            process_button = st.form_submit_button("Send Request", use_container_width=True)
+
+    return user_input, process_button
+
+
+# --- Command Handler Functions ---
+
+def handle_add_command(user_input, llm_client, repository, processing_status):
+    """Handle the ADD command to ingest documents."""
+    document_text = user_input[4:].strip()
+    
+    if not document_text:
+        processing_status.update(label="ADD command invalid.", state="error")
+        return "Error: ADD command requires document text after 'ADD:'."
+        
+    if not is_concert_domain(document_text):
+        processing_status.update(label="Document not relevant.", state="complete")
+        return "Sorry, I cannot ingest documents with other themes."
+    
+    processing_status.update(label="Document seems relevant. Generating summary...", state="running")
+    summary = summarize_document(document_text, llm_client, st.session_state.llm_provider)
+    
+    if summary.startswith("Error:"):
+        processing_status.update(label="Summary generation failed.", state="error")
+        return f"Could not process the document: {summary}"
+    
+    processing_status.update(label="Summary generated. Ingesting into RAG system...", state="running")
+    doc_id = repository.add_document_summary(summary)
+    
+    if doc_id != -1:
+        processing_status.update(label="Document successfully added.", state="complete")
+        return f"Document successfully added (ID: {doc_id}).\n\nSummary:\n'{summary}'"
+    else:
+        processing_status.update(label="Document saving failed.", state="error")
+        return f"Error: Generated summary but failed to save it.\n\nSummary:\n'{summary}'"
+
+
+def handle_query_command(user_input, repository, llm_client, processing_status):
+    """Handle the QUERY command to search RAG."""
+    query_text = user_input[6:].strip()
+    
+    if not query_text:
+        processing_status.update(label="QUERY command invalid.", state="error")
+        return "Error: QUERY command requires a question after 'QUERY:'."
+    
+    processing_status.update(
+        label=f"Searching RAG for '{query_text}' using {st.session_state.llm_provider.upper()}...", 
+        state="running"
+    )
+    response = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
+    processing_status.update(label="RAG query processed.", state="complete")
+    
+    return response
+
+
+def handle_count_command(repository, processing_status):
+    """Handle the COUNT command to show document count."""
+    count = repository.get_total_documents()
+    processing_status.update(label="Document count retrieved.", state="complete")
+    return f"Total documents currently stored: {count}"
+
+
+def handle_help_command(processing_status):
+    """Handle the HELP command to display available commands."""
+    processing_status.update(label="Help information displayed.", state="complete")
+    return """
+Available Commands:
+- **ADD:** `<document text>`: Add a new document about a concert tour.
+- **QUERY:** `<your question>`: Ask a question based on added documents.
+- **COUNT**: See how many documents are stored.
+- Enter **Artist or Band Name**: Search online for concerts if RAG finds no info or repo is empty.
+"""
+
+def handle_search_fallback(query_text, serpapi_key_present, llm_client, processing_status, 
+                          is_empty_repo=False, rag_answer=None):
+    """
+    Handle fallback to online search when either:
+    1. Repository is empty (is_empty_repo=True)
+    2. RAG found no results (is_empty_repo=False, rag_answer provided)
+    """
+    if not serpapi_key_present:
+        if is_empty_repo:
+            processing_status.update(label="Online search skipped (SerpAPI missing).", state="error")
+            return "Online search is required as the repository is empty, but SerpAPI key is missing. Please add SERPAPI_KEY to your .env file."
+        else:
+            processing_status.update(label="Online search fallback skipped (SerpAPI missing).", state="complete")
+            return rag_answer + "\n\nNote: RAG found no info in documents, and online search was skipped because the SerpAPI key is missing."
+    
+    if is_empty_repo:
+        status_message = f"No documents loaded. Attempting online search for concerts by '{query_text}'..."
+    else:
+        status_message = f"RAG found no specific info in documents. Attempting online search for '{query_text}' as a potential artist name..."
+    
+    processing_status.update(label=status_message, state="running")
+    response = perform_online_concert_search(query_text, llm_client, st.session_state.llm_provider)
+    
+    update_status_based_on_search_result(response, processing_status)
+    return response
+
+def handle_empty_repository(query_text, serpapi_key_present, llm_client, processing_status):
+    """Handle queries when repository is empty."""
+    return handle_search_fallback(query_text, serpapi_key_present, llm_client, 
+                                 processing_status, is_empty_repo=True)
+
+
+def handle_repository_search(query_text, repository, llm_client, not_found_phrases_rag, serpapi_key_present, processing_status):
+    """Search repository and potentially fallback to online search."""
+    processing_status.update(
+        label=f"Documents loaded. Searching RAG for '{query_text}' using {st.session_state.llm_provider.upper()}...", 
+        state="running"
+    )
+    rag_answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
+    
+    if rag_found_nothing(rag_answer, not_found_phrases_rag):
+        return handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status)
+    else:
+        processing_status.update(label="RAG found relevant information.", state="complete")
+        return rag_answer
+
+
+def rag_found_nothing(rag_answer, not_found_phrases_rag):
+    """Check if RAG found no relevant information."""
+    lowercased_rag_answer = rag_answer.strip().lower()
+    
+    no_info_patterns = [
+        "does not mention",
+        "not mention",
+        "no mention",
+        "no information",
+        "therefore, the answer is:",
+        "not available",
+        "no data",
+        "couldn't find",
+        "could not find",
+        "not provided",
+    ]
+    
+    for pattern in no_info_patterns:
+        if pattern in lowercased_rag_answer:
+            return True
+            
+    if "answer:" in lowercased_rag_answer and any(phrase in lowercased_rag_answer for phrase in ["no", "not"]):
+        return True
+        
+    all_phrases = not_found_phrases_rag
+    if any(phrase in lowercased_rag_answer for phrase in all_phrases):
+        return True
+        
+    return len(lowercased_rag_answer) < 50
+
+
+def handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status):
+    """Handle case when RAG finds no results."""
+    return handle_search_fallback(query_text, serpapi_key_present, llm_client, 
+                                 processing_status, is_empty_repo=False, rag_answer=rag_answer)
+
+
+def update_status_based_on_search_result(response, processing_status):
+    """Update status based on the search result."""
+    if response.startswith("Error:"):
+        processing_status.update(label="Online search failed.", state="error")
+    elif "No concert information found for " in response:
+        processing_status.update(label="Online search found nothing.", state="complete")
+    else:
+        processing_status.update(label="Online search completed.", state="complete")
+
+
+def process_user_request(user_input, user_input_upper, query_text, repository, llm_client, processing_status):
+    """
+    Processes user requests and generates appropriate responses
+    using the match...case statement (Python 3.10+).
+    """
+
+    match user_input_upper:
+        case cmd if cmd.startswith("ADD:"):
+            return handle_add_command(user_input, llm_client, repository, processing_status)
+
+        case cmd if cmd.startswith("QUERY:"):
+            return handle_query_command(user_input, repository, llm_client, processing_status)
+
+        case "COUNT":
+            return handle_count_command(repository, processing_status)
+
+        case "HELP":
+            return handle_help_command(processing_status)
+
+        case _:
+            return handle_general_query(query_text, repository, llm_client, processing_status)
+
+
+def handle_general_query(query_text, repository, llm_client, processing_status):
+    """Handle non-command input as potential RAG query with online search fallback."""
+    current_doc_count = repository.get_total_documents()
+    serpapi_key_present = os.getenv("SERPAPI_KEY")
+
+
+     # Clean up the query text if it starts with QUEST:
+    if query_text.upper().startswith("QUEST:"):
+        search_term = query_text[6:].strip()
+        if search_term.startswith("'") and search_term.endswith("'"):
+            search_term = search_term[1:-1]
+        query_text = search_term
+        
+    not_found_phrases_rag = [
+        "couldn't find specific information related to your query in the ingested documents",
+        "i couldn't find specific information",
+        "based on the available information, i couldn't generate",
+        "no information about",
+        "no relevant summaries found",
+        "could not find specific upcoming concert information",
+        "no concert information was found based on the search results",
+        "there is no mention of",
+        "answer: there is no mention of"
+    ]
+
+    # Check if repository is empty
+    if current_doc_count == 0:
+        return handle_empty_repository(query_text, serpapi_key_present, llm_client, processing_status)
+    else:
+        return handle_repository_search(
+            query_text, 
+            repository, 
+            llm_client, 
+            not_found_phrases_rag, 
+            serpapi_key_present, 
+            processing_status
+        )
+
+
+# --- MAIN APPLICATION CODE ---
+
+st.set_page_config(
+    page_title=PAGE_TITLE,
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title(PAGE_TITLE)
+display_welcome_message()
+
+st.sidebar.header(SIDEBAR_TITLE)
+display_api_key_status()
+initialize_provider_selection()
+
+llm_client, repository = initialize_llm_and_repo()
+
+initialize_chat_session()
+
 st.subheader("Interaction History")
-chat_history_area = st.empty() # Use a placeholder to update the history area
+chat_container = st.container(height=CHAT_CONTAINER_HEIGHT)
+display_messages(chat_container)
 
-def display_messages():
-    """Displays the messages stored in session state."""
-    # Format messages for display, e.g., using Markdown
-    formatted_history = ""
-    for msg_type, message in st.session_state.messages:
-        if msg_type == "user":
-            formatted_history += f"**You:** {message}\n\n"
-        elif msg_type == "bot":
-            formatted_history += f"**Bot:** {message}\n\n"
-        elif msg_type == "info":
-             formatted_history += f"ℹ️ *{message}*\n\n"
-        elif msg_type == "error":
-             formatted_history += f"❌ *Error: {message}*\n\n"
+user_input, process_button = render_chat_input()
 
-    chat_history_area.markdown(formatted_history)
-
-
-display_messages()
-
-
-# --- User Input ---
-user_input = st.text_input("Enter your request (e.g., 'ADD: <text>', 'QUERY: <question>', or Artist Name):", key="user_input")
-process_button = st.button("Process Request")
-
-
-# --- Process User Input ---
 if process_button and user_input:
+    st.session_state.messages_displayed = False
     st.session_state.messages.append(("user", user_input))
-    display_messages() # Update display immediately with user message
-
     response = ""
+    query_text = user_input.strip()
     user_input_upper = user_input.upper()
 
-    with st.spinner("Processing..."):
+    with st.status("Processing request...", expanded=True) as processing_status:
         try:
-            if user_input_upper.startswith("ADD:"):
-                document_text = user_input[4:].strip()
-                if not document_text:
-                    response = "Error: ADD command requires document text after 'ADD:'."
-                elif is_concert_domain(document_text):
-                    st.session_state.messages.append(("info", "Document seems relevant. Generating summary..."))
-                    display_messages()
-                    # Pass cached client and provider name
-                    summary = summarize_document(document_text, llm_client, st.session_state.llm_provider)
-
-                    if summary.startswith("Error:"):
-                        response = f"Could not process the document: {summary}"
-                    else:
-                        doc_id = repository.add_document_summary(summary)
-                        if doc_id != -1:
-                            response = f"Document successfully added (ID: {doc_id}).\n\nSummary:\n'{summary}'"
-                        else:
-                            response = f"Error: Generated summary but failed to save it.\n\nSummary:\n'{summary}'"
-                else:
-                    response = "Sorry, I cannot ingest documents with other themes."
-
-            elif user_input_upper.startswith("QUERY:"):
-                query_text = user_input[6:].strip()
-                if not query_text:
-                    response = "Error: QUERY command requires a question after 'QUERY:'."
-                else:
-                    st.session_state.messages.append(("info", f"Searching and generating answer using {st.session_state.llm_provider.upper()}..."))
-                    display_messages()
-                    # Pass cached repository, client, and provider name
-                    answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
-                    response = answer # answer_question already returns a formatted string including potential errors
-
-            elif user_input_upper == "COUNT":
-                 count = repository.get_total_documents()
-                 response = f"Total documents currently stored: {count}"
-
-            elif user_input_upper == "HELP":
-                 response = """
-Available Commands:
-ADD: <document text>   - Add a new document about a concert tour.
-QUERY: <your question> - Ask a question about the concert tours (RAG).
-COUNT                  - Show the number of documents stored (RAG).
-<Artist or Band Name>  - If no documents are loaded, search online for concerts.
-"""
-            # --- Bonus Feature Logic: Concert Search ---
-            elif repository.get_total_documents() == 0:
-                # If no documents are loaded and it's not a command, try online search
-                artist_name = user_input.strip()
-                if artist_name:
-                    st.session_state.messages.append(("info", f"No documents loaded. Attempting online search for concerts by '{artist_name}'..."))
-                    display_messages()
-                    # Pass cached client and provider name
-                    search_result = perform_online_concert_search(artist_name, llm_client, st.session_state.llm_provider)
-                    response = search_result
-                else:
-                     response = "Please enter 'ADD:', 'QUERY:', or an artist name."
-
-            # --- Default RAG Query if documents exist and not a specific command ---
-            else:
-                # If documents exist and it's not ADD/QUERY/COUNT/HELP, treat as implicit QUERY
-                query_text = user_input.strip()
-                if query_text:
-                     st.session_state.messages.append(("info", f"Documents loaded. Treating input as query. Searching and generating answer using {st.session_state.llm_provider.upper()}..."))
-                     display_messages()
-                     # Pass cached repository, client, and provider name
-                     answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
-                     response = answer # answer_question already returns a formatted string
-                else:
-                    response = "Please enter a command (ADD:, QUERY:, COUNT, HELP) or a query/artist name."
-
-
+            response = process_user_request(
+                user_input, 
+                user_input_upper, 
+                query_text, 
+                repository, 
+                llm_client, 
+                processing_status
+            )
         except Exception as e:
-            logging.error(f"An error occurred during request processing: {e}", exc_info=True)
+            logging.error(f"An unexpected error occurred during request processing: {e}", exc_info=True)
             response = f"An unexpected error occurred: {e}. Please check the application logs."
-            st.session_state.messages.append(("error", response)) # Add error specifically
+            processing_status.update(label="An unexpected error occurred.", state="error")
+            st.session_state.messages.append(("error", response))
 
-    # Append bot response to history and update display
     st.session_state.messages.append(("bot", response))
-    display_messages()
+    display_messages(chat_container)
 
-
-# Optional: Display repository status in sidebar
 st.sidebar.markdown("---")
+st.sidebar.subheader("Repository Status")
 if repository:
-    st.sidebar.info(f"Repository Status:\nDocuments: {repository.get_total_documents()}")
+    st.sidebar.info(f"Documents Stored: {repository.get_total_documents()}")
 else:
     st.sidebar.warning("Repository failed to load.")
