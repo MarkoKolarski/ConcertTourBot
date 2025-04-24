@@ -238,7 +238,7 @@ docker run --env-file .env -it concert-bot
 #### ▶ Streamlit Mode
 
 ```bash
-docker run --env-file .env concert-bot-streamlit
+docker run --env-file .env -p 8501:8501 concert-bot-streamlit
 ```
 
 Then go to: [http://localhost:8501](http://localhost:8501)
