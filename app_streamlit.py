@@ -412,21 +412,36 @@ Available Commands:
 - Enter **Artist or Band Name**: Search online for concerts if RAG finds no info or repo is empty.
 """
 
-
-def handle_empty_repository(query_text, serpapi_key_present, llm_client, processing_status):
-    """Handle queries when repository is empty."""
+def handle_search_fallback(query_text, serpapi_key_present, llm_client, processing_status, 
+                          is_empty_repo=False, rag_answer=None):
+    """
+    Handle fallback to online search when either:
+    1. Repository is empty (is_empty_repo=True)
+    2. RAG found no results (is_empty_repo=False, rag_answer provided)
+    """
     if not serpapi_key_present:
-        processing_status.update(label="Online search skipped (SerpAPI missing).", state="error")
-        return "Online search is required as the repository is empty, but SerpAPI key is missing. Please add SERPAPI_KEY to your .env file."
+        if is_empty_repo:
+            processing_status.update(label="Online search skipped (SerpAPI missing).", state="error")
+            return "Online search is required as the repository is empty, but SerpAPI key is missing. Please add SERPAPI_KEY to your .env file."
+        else:
+            processing_status.update(label="Online search fallback skipped (SerpAPI missing).", state="complete")
+            return rag_answer + "\n\nNote: RAG found no info in documents, and online search was skipped because the SerpAPI key is missing."
     
-    processing_status.update(
-        label=f"No documents loaded. Attempting online search for concerts by '{query_text}'...", 
-        state="running"
-    )
+    if is_empty_repo:
+        status_message = f"No documents loaded. Attempting online search for concerts by '{query_text}'..."
+    else:
+        status_message = f"RAG found no specific info in documents. Attempting online search for '{query_text}' as a potential artist name..."
+    
+    processing_status.update(label=status_message, state="running")
     response = perform_online_concert_search(query_text, llm_client, st.session_state.llm_provider)
     
     update_status_based_on_search_result(response, processing_status)
     return response
+
+def handle_empty_repository(query_text, serpapi_key_present, llm_client, processing_status):
+    """Handle queries when repository is empty."""
+    return handle_search_fallback(query_text, serpapi_key_present, llm_client, 
+                                 processing_status, is_empty_repo=True)
 
 
 def handle_repository_search(query_text, repository, llm_client, not_found_phrases_rag, serpapi_key_present, processing_status):
@@ -436,9 +451,6 @@ def handle_repository_search(query_text, repository, llm_client, not_found_phras
         state="running"
     )
     rag_answer = answer_question(query_text, repository, llm_client, st.session_state.llm_provider)
-    
-    if query_text.lower() in rag_answer.lower() and "answer:" in rag_answer.lower() and "there is no mention of" in rag_answer.lower():
-        return handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status)
     
     if rag_found_nothing(rag_answer, not_found_phrases_rag):
         return handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status)
@@ -451,44 +463,37 @@ def rag_found_nothing(rag_answer, not_found_phrases_rag):
     """Check if RAG found no relevant information."""
     lowercased_rag_answer = rag_answer.strip().lower()
     
-    additional_phrases = [
-        "there is no information provided about",
-        "therefore, there is no answer to provide",
-        "no information was found",
-        "i don't have any information about",
-        "i couldn't find any information about",
-        "there are no details available regarding",
-        "no data is available on",
-        "no context was provided about",
-        "there is no mention of",
-        "no mention of",
-        "not mentioned in",
-        "couldn't find any mention of",
+    no_info_patterns = [
+        "does not mention",
+        "not mention",
+        "no mention",
+        "no information",
+        "therefore, the answer is:",
+        "not available",
+        "no data",
+        "couldn't find",
+        "could not find",
+        "not provided",
     ]
     
-    all_phrases = not_found_phrases_rag + additional_phrases
-
-    if "answer:" in lowercased_rag_answer and "there is no mention of" in lowercased_rag_answer:
+    for pattern in no_info_patterns:
+        if pattern in lowercased_rag_answer:
+            return True
+            
+    if "answer:" in lowercased_rag_answer and any(phrase in lowercased_rag_answer for phrase in ["no", "not"]):
         return True
-
-    return (any(phrase in lowercased_rag_answer for phrase in all_phrases) or 
-            len(lowercased_rag_answer) < 30)
+        
+    all_phrases = not_found_phrases_rag
+    if any(phrase in lowercased_rag_answer for phrase in all_phrases):
+        return True
+        
+    return len(lowercased_rag_answer) < 50
 
 
 def handle_rag_no_results(rag_answer, query_text, serpapi_key_present, llm_client, processing_status):
     """Handle case when RAG finds no results."""
-    if not serpapi_key_present:
-        processing_status.update(label="Online search fallback skipped (SerpAPI missing).", state="complete")
-        return rag_answer + "\n\nNote: RAG found no info in documents, and online search was skipped because the SerpAPI key is missing."
-    
-    processing_status.update(
-        label=f"RAG found no specific info in documents. Attempting online search for '{query_text}' as a potential artist name...", 
-        state="running"
-    )
-    response = perform_online_concert_search(query_text, llm_client, st.session_state.llm_provider)
-    
-    update_status_based_on_search_result(response, processing_status)
-    return response
+    return handle_search_fallback(query_text, serpapi_key_present, llm_client, 
+                                 processing_status, is_empty_repo=False, rag_answer=rag_answer)
 
 
 def update_status_based_on_search_result(response, processing_status):
