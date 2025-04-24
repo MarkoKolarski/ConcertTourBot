@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 load_dotenv() 
 
 # --- General Service Configuration ---
-# Choose the LLM provider: 'huggingface' (default) or 'gemini'
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", 'huggingface').lower()
 
 # --- RAG System Configuration ---
@@ -23,9 +22,6 @@ CONCERT_KEYWORDS = [
 ]
 
 # --- Hugging Face Configuration ---
-# Recommended models:
-# Summarization: 'facebook/bart-large-cnn', 'google/pegasus-xsum', 'sshleifer/distilbart-cnn-12-6' (smaller)
-# QA/Generation: 'google-t5/t5-base', 'distilgpt2' (smaller, requires careful prompting)
 HF_SUMMARIZATION_MODEL = os.getenv("HF_SUMMARIZATION_MODEL", 'sshleifer/distilbart-cnn-6-6')
 HF_QA_MODEL = os.getenv("HF_QA_MODEL", 't5-small')
 
@@ -35,7 +31,7 @@ HF_MAX_INPUT_LENGTH = 1024 # Check model card for specific limits (e.g., BART: 1
 # --- Gemini Configuration ---
 GEMINI_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
 GEMINI_API_KEY = os.getenv(GEMINI_API_KEY_ENV_VAR)
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", 'gemini-1.5-flash-latest') # Or other generative models
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", 'gemini-1.5-flash-latest')
 
 # Gemini Safety Settings (optional)
 GEMINI_SAFETY_SETTINGS = [
@@ -53,6 +49,4 @@ GEMINI_GENERATION_CONFIG = {
 }
 
 # --- Input Truncation (General Fallback) ---
-# Simple token count limit as a fallback if specific model limits aren't handled
-# (Approximation: 1 token ~= 4 chars in English)
-MAX_LLM_INPUT_CHARS = 3500 # Adjust as needed (approx 800-900 tokens)
+MAX_LLM_INPUT_CHARS = 3500
