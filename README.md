@@ -1,4 +1,4 @@
-# 🎶 Concert Tour Information Bot
+# 🎶 Concert Tour Bot
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.44.1-red?logo=streamlit)](https://streamlit.io/)
@@ -7,12 +7,9 @@
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Transformers-yellow?logo=huggingface)](https://huggingface.co/)
 [![Google Gemini](https://img.shields.io/badge/Google%20Gemini-Integrated-orange?logo=google)](https://ai.google/)
 
-
-> ✅ **All required core functionalities and bonus features have been fully implemented.**
-
 ## Overview
 
-**Concert Tour Information Bot** is a Python-based service developed to intelligently manage and retrieve domain-specific information about upcoming concert tours for the 2025–2026 season. The service uses **Retrieval-Augmented Generation (RAG)** for document storage and querying, ensuring that answers are **strictly grounded in user-provided documents** rather than general knowledge.
+**Concert Tour Bot** is a Python-based service developed to intelligently manage and retrieve domain-specific information about upcoming concert tours for the 2025–2026 season. The service uses **Retrieval-Augmented Generation (RAG)** for document storage and querying, ensuring that answers are **strictly grounded in user-provided documents** rather than general knowledge.
 
 This bot supports:
 
@@ -89,6 +86,9 @@ ConcertTourBot/
 ├── config.py                 # Configuration variables
 ├── .env                      # API keys (not included in repo)
 │
+├── Dockerfile                # Docker configuration for CLI app
+├── Dockerfile.streamlit      # Docker configuration for Streamlit app
+│
 ├── .streamlit/
 │   ├── style.css             # Custom styles for Streamlit
 │   └──config.toml               # Streamlit configuration
@@ -119,8 +119,8 @@ You can run this project in **two ways**: via **classic Python setup** or using 
 ### 📥 1. Clone the Repository
 
 ```bash
-git clone https://github.com/MarkoKolarski/ProvectusInternship_MarkoKolarski.git
-cd ProvectusInternship_MarkoKolarski
+git clone https://github.com/MarkoKolarski/ConcertTourBot.git
+cd ConcertTourBot
 ```
 
 ---
